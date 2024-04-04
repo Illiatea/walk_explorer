@@ -1,9 +1,9 @@
 import requests
-import random
 import math
+import random
 
 
-def generate_random_route(start_latitude, start_longitude, duration):
+def generate_route(start_latitude, start_longitude, duration, area_bounds):
     # OpenStreetMap OSRM API endpoint
     url = "http://router.project-osrm.org/route/v1/walking/"
     
@@ -22,25 +22,24 @@ def generate_random_route(start_latitude, start_longitude, duration):
         # Get the current latitude and longitude
         current_latitude, current_longitude = route[-1]
         
-        # Generate a random direction (north, south, east, west)
-        direction = random.choice(["north", "south", "east", "west"])
+        # Calculate the maximum distance that can be traveled in the interval duration
+        max_distance = interval_duration * 1.4  # Assuming an average walking speed of 1.4 m/s
         
-        # Generate a random distance (in meters) to travel in the selected direction
-        distance = random.randint(100, 500)  # Adjust the range as needed
+        # Generate random bearing (direction) in degrees
+        bearing = math.radians(random.randint(0, 360))
         
-        # Calculate the new coordinates based on the direction and distance
-        if direction == "north":
-            new_latitude = current_latitude + (distance / 111111)
-            new_longitude = current_longitude
-        elif direction == "south":
-            new_latitude = current_latitude - (distance / 111111)
-            new_longitude = current_longitude
-        elif direction == "east":
-            new_latitude = current_latitude
-            new_longitude = current_longitude + (distance / (111111 * math.cos(math.radians(current_latitude))))
-        else:  # direction == "west"
-            new_latitude = current_latitude
-            new_longitude = current_longitude - (distance / (111111 * math.cos(math.radians(current_latitude))))
+        # Calculate the new coordinates based on the current location, bearing, and maximum distance
+        new_latitude = math.asin(math.sin(math.radians(current_latitude)) * math.cos(max_distance / 6371000) +
+                                 math.cos(math.radians(current_latitude)) * math.sin(max_distance / 6371000) * math.cos(bearing))
+        new_longitude = math.radians(current_longitude) + math.atan2(math.sin(bearing) * math.sin(max_distance / 6371000) * math.cos(math.radians(current_latitude)),
+                                                                     math.cos(max_distance / 6371000) - math.sin(math.radians(current_latitude)) * math.sin(new_latitude))
+        
+        new_latitude = math.degrees(new_latitude)
+        new_longitude = math.degrees(new_longitude)
+        
+        # Check if the new coordinates are within the area boundaries
+        if not is_within_bounds(new_latitude, new_longitude, area_bounds):
+            continue
         
         # Construct the OSRM API request URL
         request_url = url + f"{current_longitude},{current_latitude};{new_longitude},{new_latitude}?steps=true"
@@ -54,11 +53,14 @@ def generate_random_route(start_latitude, start_longitude, duration):
             data = response.json()
             
             if data["code"] == "Ok":
-                # Extract the coordinates from the response
-                coordinates = decode_polyline(data["routes"][0]["geometry"])
+                # Extract the route geometry from the response
+                geometry = data["routes"][0]["geometry"]
+                
+                # Decode the polyline geometry
+                coordinates = decode_polyline(geometry)
                 
                 # Add the new coordinates to the route list
-                route.extend([(coord[1], coord[0]) for coord in coordinates])
+                route.extend(coordinates)
             else:
                 print("An error occurred while generating the route.")
                 return None
@@ -68,7 +70,56 @@ def generate_random_route(start_latitude, start_longitude, duration):
             print(e)
             return None
     
-    return route
+    # Truncate the route to the specified duration
+    truncated_route = truncate_route(route, duration_seconds)
+    
+    return truncated_route
+
+
+def is_within_bounds(latitude, longitude, area_bounds):
+    min_lat, min_lon, max_lat, max_lon = area_bounds
+    return min_lat <= latitude <= max_lat and min_lon <= longitude <= max_lon
+
+
+def truncate_route(route, duration_seconds):
+    truncated_route = [route[0]]
+    total_distance = 0
+    
+    for i in range(1, len(route)):
+        prev_coord = route[i - 1]
+        curr_coord = route[i]
+        
+        # Calculate the distance between the previous and current coordinates
+        distance = haversine_distance(prev_coord, curr_coord)
+        total_distance += distance
+        
+        # Check if the total distance exceeds the specified duration
+        if total_distance > duration_seconds * 1.4:  # Assuming an average walking speed of 1.4 m/s
+            break
+        
+        truncated_route.append(curr_coord)
+    
+    return truncated_route
+
+
+def haversine_distance(coord1, coord2):
+    lat1, lon1 = coord1
+    lat2, lon2 = coord2
+    
+    # Convert coordinates from degrees to radians
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    c = 2 * math.asin(math.sqrt(a))
+    
+    # Earth's radius in meters
+    radius = 6371000
+    
+    distance = radius * c
+    return distance
 
 
 def decode_polyline(polyline_str):
@@ -96,6 +147,6 @@ def decode_polyline(polyline_str):
         lat += changes['latitude']
         lng += changes['longitude']
 
-        coordinates.append((lat / 100000.0, lng / 100000.0))
+        coordinates.append((lat / 1e5, lng / 1e5))
 
     return coordinates
